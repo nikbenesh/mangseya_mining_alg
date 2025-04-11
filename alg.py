@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from itertools import combinations
 import math
+from lp_alg import find_proportions
 
 
 class Pile:
@@ -40,21 +41,24 @@ def input_piles():
 
 def calculate_mixture(piles, used_scoops, scoop_size_t, target_concentration):
     """Рассчитывает параметры смеси при заданном количестве ковшей из каждого штабеля"""
-    total_ore_mass = sum(piles[i].ore_mass_t * min(used_scoops[i] * scoop_size_t / piles[i].ore_mass_t, 1.0) 
-                         for i in range(len(piles)))
+    total_ore_mass = 0
+    total_gold_mass = 0
     
-    if total_ore_mass == 0:
-        return 0, 0
-    
-    total_gold_mass = sum(piles[i].gold_mass_g * min(used_scoops[i] * scoop_size_t / piles[i].ore_mass_t, 1.0) 
-                          for i in range(len(piles)))
+    for i in range(len(piles)):
+        # Рассчитываем массу руды из текущего штабеля
+        ore_from_pile = min(used_scoops[i] * scoop_size_t, piles[i].ore_mass_t)
+        total_ore_mass += ore_from_pile
+        
+        # Рассчитываем массу золота из текущего штабеля
+        gold_concentration = piles[i].gold_mass_g / piles[i].ore_mass_t
+        total_gold_mass += ore_from_pile * gold_concentration
     
     mixture_concentration = total_gold_mass / total_ore_mass if total_ore_mass > 0 else 0
     
     return total_ore_mass, mixture_concentration
 
 
-def find_optimal_combinations(piles, target_mass, target_concentration, scoop_size_t, allowed_deviation=0.15, max_solutions=3):
+def find_optimal_combinations(piles, target_mass, target_concentration, scoop_size_t, allowed_concentration_deviation=0.15, allowed_mass_deviation=0.05, max_solutions=3):
     """Находит оптимальные комбинации штабелей"""
     # Сортировка штабелей по предпочтительности
     sorted_piles = sorted(piles, key=lambda p: -p.preference)
@@ -64,12 +68,18 @@ def find_optimal_combinations(piles, target_mass, target_concentration, scoop_si
     
     # Функция оценки качества решения
     def solution_score(total_mass, concentration, used_scoops):
+        # Отклонение концентрации
         concentration_error = abs(concentration - target_concentration)
+        
+        # Отклонение массы
         mass_error = abs(total_mass - target_mass) / target_mass if target_mass > 0 else float('inf')
         
         # Штраф за отклонение от целевых параметров
-        if concentration_error > allowed_deviation:
+        if concentration_error > allowed_concentration_deviation:
             return float('-inf')
+        
+        # if mass_error > allowed_mass_deviation:
+        #     return float('-inf')
         
         # Предпочтительность используемых штабелей
         preference_score = sum(sorted_piles[i].preference * (used_scoops[i] > 0) for i in range(len(sorted_piles)))
@@ -79,13 +89,19 @@ def find_optimal_combinations(piles, target_mass, target_concentration, scoop_si
         pile_count_penalty = used_piles_count / len(sorted_piles) if len(sorted_piles) > 0 else 0
         
         # Итоговая оценка: больше = лучше
-        return preference_score - mass_error - (concentration_error / allowed_deviation) - pile_count_penalty
+        # Приоритет набора массы: если масса близка к целевой, увеличиваем оценку
+        mass_bonus = 10.0 if mass_error < 0.01 else 0.0
+        
+        # Приоритет концентрации: если концентрация близка к целевой, увеличиваем оценку
+        concentration_bonus = 5.0 if concentration_error < 0.15 else 0.0
+        
+        return mass_bonus + concentration_bonus + preference_score - pile_count_penalty
     
     # Рассчитываем максимальное количество ковшей для целевой массы
     target_scoops = math.ceil(target_mass / scoop_size_t)
     
     # Проверяем комбинации с разным количеством штабелей
-    for k in range(1, min(5, len(sorted_piles) + 1)):
+    for k in range(1, len(sorted_piles) + 1):  # Убрали ограничение на 5 штабелей
         for pile_indices in combinations(range(len(sorted_piles)), k):
             # Задача оптимизации: найти оптимальное количество ковшей для выбранных штабелей
             
@@ -102,7 +118,8 @@ def find_optimal_combinations(piles, target_mass, target_concentration, scoop_si
             current_scoops = [0] * len(sorted_piles)
             
             # Добавляем ковши один за другим, выбирая наиболее подходящий штабель
-            for _ in range(target_scoops * 2):  # Увеличиваем диапазон поиска
+            max_iterations = target_scoops * 3  # Увеличили множитель для более широкого поиска
+            for _ in range(max_iterations):
                 best_step_score = float('-inf')
                 best_step_idx = -1
                 
@@ -112,14 +129,21 @@ def find_optimal_combinations(piles, target_mass, target_concentration, scoop_si
                         # Пробуем добавить один ковш из этого штабеля
                         current_scoops[idx] += 1
                         mass, concentration = calculate_mixture(sorted_piles, current_scoops, scoop_size_t, target_concentration)
-                        score = solution_score(mass, concentration, current_scoops)
                         
-                        # Возвращаем как было
-                        current_scoops[idx] -= 1
-                        
-                        if score > best_step_score:
-                            best_step_score = score
-                            best_step_idx = idx
+                        # Проверяем, не превышает ли масса целевую слишком сильно
+                        mass_error = abs(mass - target_mass) / target_mass if target_mass > 0 else float('inf')
+                        if mass_error <= allowed_mass_deviation:
+                            score = solution_score(mass, concentration, current_scoops)
+                            
+                            # Возвращаем как было
+                            current_scoops[idx] -= 1
+                            
+                            if score > best_step_score:
+                                best_step_score = score
+                                best_step_idx = idx
+                        else:
+                            # Возвращаем как было
+                            current_scoops[idx] -= 1
                 
                 # Если нашли улучшение, применяем его
                 if best_step_idx >= 0:
@@ -136,7 +160,7 @@ def find_optimal_combinations(piles, target_mass, target_concentration, scoop_si
                     
                     # Если достигли или превысили целевую массу и концентрация в допуске,
                     # то смотрим, можно ли убрать лишние ковши
-                    if mass >= target_mass and abs(concentration - target_concentration) <= allowed_deviation:
+                    if mass >= target_mass and abs(concentration - target_concentration) <= allowed_concentration_deviation:
                         # Пробуем убирать ковши по одному, начиная с наименее предпочтительных штабелей
                         for remove_idx in sorted(pile_indices, key=lambda i: sorted_piles[i].preference):
                             if current_scoops[remove_idx] > 0:
@@ -144,7 +168,7 @@ def find_optimal_combinations(piles, target_mass, target_concentration, scoop_si
                                 new_mass, new_concentration = calculate_mixture(sorted_piles, current_scoops, scoop_size_t, target_concentration)
                                 
                                 # Если всё ещё в допуске и масса достаточная, сохраняем изменение
-                                if new_mass >= target_mass and abs(new_concentration - target_concentration) <= allowed_deviation:
+                                if new_mass >= target_mass and abs(new_concentration - target_concentration) <= allowed_concentration_deviation:
                                     mass, concentration = new_mass, new_concentration
                                     score = solution_score(mass, concentration, current_scoops)
                                     if score > best_score:
@@ -161,18 +185,24 @@ def find_optimal_combinations(piles, target_mass, target_concentration, scoop_si
             
             # Если нашли допустимое решение, добавляем его в список
             if best_score > float('-inf'):
+                d, proportions = find_proportions(best_scoops)
+                print(best_scoops)
+                print(proportions)
                 solution = {
                     'total_mass': best_mass,
                     'concentration': best_concentration,
                     'used_piles': [
                         {
                             'index': sorted_piles[i].index,
-                            'scoops': best_scoops[i],
-                            'amount': best_scoops[i] * scoop_size_t
+                            'buckets_total': best_scoops[i],
+                            'amount': best_scoops[i] * scoop_size_t,
+                            'bucket_proportion': proportions[i]
+
                         }
                         for i in range(len(sorted_piles)) if best_scoops[i] > 0
                     ],
                     'score': best_score,
+                    'cycles_count': d,
                     'used_piles_count': sum(1 for s in best_scoops if s > 0)
                 }
                 solutions.append(solution)
@@ -192,12 +222,22 @@ def main():
     target_mass = float(input("Введите целевую массу руды (т): "))
     target_concentration = float(input("Введите целевую концентрацию золота (г/т): "))
     
-    # Спрашиваем, хочет ли пользователь изменить допустимое отклонение
-    change_deviation = input("Хотите изменить допустимое отклонение концентрации? (да/нет): ").lower()
-    if change_deviation == 'да':
-        allowed_deviation = float(input("Введите допустимое отклонение концентрации (г/т): "))
+    # Спрашиваем, хочет ли пользователь изменить допустимое отклонение концентрации
+    change_concentration_deviation = input("Хотите изменить допустимое отклонение концентрации? (да/нет): ").lower()
+    if change_concentration_deviation == 'да':
+        allowed_concentration_deviation = float(input("Введите допустимое отклонение концентрации (г/т): "))
     else:
-        allowed_deviation = 0.15
+        allowed_concentration_deviation = 0.15
+    
+    # Спрашиваем, хочет ли пользователь изменить допустимое отклонение массы
+    change_mass_deviation = input("Хотите изменить допустимое отклонение массы? (да/нет): ").lower()
+    if change_mass_deviation == 'да':
+        allowed_mass_deviation = float(input("Введите допустимое отклонение массы (доля от целевой массы): "))
+    else:
+        allowed_mass_deviation = 0.05
+    
+    # Ввод количества комбинаций
+    max_solutions = int(input("Введите желаемое количество комбинаций (по умолчанию 3): ") or "3")
     
     # Выбор способа ввода данных о штабелях
     input_method = input("Выберите способ ввода данных о штабелях (1 - из CSV, 2 - вручную): ")
@@ -209,16 +249,18 @@ def main():
         piles = input_piles()
     
     # Поиск оптимальных комбинаций
-    solutions = find_optimal_combinations(piles, target_mass, target_concentration, scoop_size_t, allowed_deviation)
+    solutions = find_optimal_combinations(piles, target_mass, target_concentration, scoop_size_t, 
+                                        allowed_concentration_deviation, allowed_mass_deviation, max_solutions)
     
     # Вывод результатов
     if not solutions:
         print("Не удалось найти подходящие комбинации штабелей.")
     else:
-        print("\nНайдены следующие комбинации штабелей:")
+        print(f"\nНайдено {len(solutions)} комбинаций штабелей:")
         for i, solution in enumerate(solutions):
             print(f"\nВариант {i+1}:")
             print(f"Итоговая масса руды: {solution['total_mass']:.2f} т")
+            print(f"Отклонение от целевой массы: {abs(solution['total_mass'] - target_mass):.2f} т ({abs(solution['total_mass'] - target_mass) / target_mass * 100:.1f}%)")
             print(f"Итоговая концентрация золота: {solution['concentration']:.2f} г/т")
             print(f"Отклонение от целевой концентрации: {abs(solution['concentration'] - target_concentration):.2f} г/т")
             print(f"Использовано штабелей: {solution['used_piles_count']}")

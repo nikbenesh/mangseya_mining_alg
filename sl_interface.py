@@ -2,10 +2,12 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from alg import Pile, calculate_mixture, find_optimal_combinations
+from lp_alg import optimize_stockpiles, find_proportions
 
-st.set_page_config(page_title="Алгоритм подбора смеси руды", layout="wide")
 
-st.title("Алгоритм подбора оптимальной смеси руды для Мангазея майнинг")
+st.set_page_config(page_title="Алгоритм подбора штабелей", layout="wide")
+
+st.title("Алгоритм подбора штабелей для Мангазея майнинг")
 
 # Боковая панель для ввода параметров
 with st.sidebar:
@@ -16,10 +18,22 @@ with st.sidebar:
     
     # Ввод целевых параметров
     target_mass = st.number_input("Целевая масса руды (т)", min_value=0.1, value=100.0, step=1.0)
-    target_concentration = st.number_input("Целевая концентрация золота (г/т)", min_value=0.01, value=1.0, step=0.01)
+    target_concentration = st.number_input("Целевая Содержание золота (г/т)", min_value=0.01, value=1.0, step=0.01)
     
-    # Ввод допустимого отклонения
-    allowed_deviation = st.number_input("Допустимое отклонение концентрации (г/т)", min_value=0.01, value=0.15, step=0.01)
+    # Ввод допустимых отклонений
+    st.subheader("Допустимые отклонения")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        allowed_concentration_deviation = st.number_input("Отклонение концентрации (г/т)", 
+                                                        min_value=0.01, value=0.15, step=0.01)
+    
+    with col2:
+        allowed_mass_deviation = st.number_input("Отклонение массы (%)", 
+                                               min_value=0.01, value=5.0, step=0.1) / 100
+    
+    # Ввод количества комбинаций
+    max_solutions = st.number_input("Количество комбинаций", min_value=1, value=3, step=1)
     
     # Выбор способа ввода данных о штабелях
     input_method = st.radio("Способ ввода данных о штабелях", ["Вручную", "Из CSV файла"])
@@ -41,7 +55,7 @@ if input_method == "Вручную":
             ore_mass_t = st.number_input(f"Масса руды (т)", min_value=0.1, value=50.0, step=1.0, key=f"mass_{i}")
         
         with col2:
-            gold_concentration_gt = st.number_input(f"Концентрация золота (г/т)", min_value=0.01, value=1.0, step=0.01, key=f"conc_{i}")
+            gold_concentration_gt = st.number_input(f"Содержание золота (г/т)", min_value=0.01, value=1.0, step=0.01, key=f"conc_{i}")
         
         with col3:
             preference = st.slider(f"Предпочтительность (%)", min_value=0, max_value=100, value=100, step=1, key=f"pref_{i}") / 100
@@ -50,26 +64,40 @@ if input_method == "Вручную":
     
     # Кнопка для запуска алгоритма
     if st.button("Найти оптимальные комбинации"):
-        solutions = find_optimal_combinations(piles, target_mass, target_concentration, scoop_size_t, allowed_deviation)
-        
-        if not solutions:
+        solutions = find_optimal_combinations(piles, target_mass, target_concentration, scoop_size_t, 
+                                            allowed_concentration_deviation, allowed_mass_deviation, max_solutions)
+        solutions.insert(0, optimize_stockpiles(piles, target_mass, target_concentration, 
+                        tolerance=allowed_concentration_deviation, bucket_capacity=scoop_size_t))
+
+        if not solutions or solutions == [None]:
             st.error("Не удалось найти подходящие комбинации штабелей.")
         else:
-            st.success(f"Найдено {len(solutions)} вариантов комбинаций штабелей.")
+            st.success(f"Найдено {len(solutions)} комбинаций штабелей.")
             
             for i, solution in enumerate(solutions):
                 with st.expander(f"Вариант {i+1}"):
+                    print(solution)
                     st.write(f"Итоговая масса руды: {solution['total_mass']:.2f} т")
-                    st.write(f"Итоговая концентрация золота: {solution['concentration']:.2f} г/т")
-                    st.write(f"Отклонение от целевой концентрации: {abs(solution['concentration'] - target_concentration):.2f} г/т")
+                    st.write(f"Отклонение от целевой массы: {abs(solution['total_mass'] - target_mass):.2f} т ({abs(solution['total_mass'] - target_mass) / target_mass * 100:.1f}%)")
+                    st.write(f"Итоговое содержание золота: {solution['concentration']:.2f} г/т")
+                    st.write(f"Отклонение от целевго содержания: {abs(solution['concentration'] - target_concentration):.2f} г/т")
                     st.write(f"Использовано штабелей: {solution['used_piles_count']}")
+                    st.write(f"Количество циклов: {solution['cycles_count']}")
                     
                     # Создаем DataFrame для отображения используемых штабелей
                     used_piles_data = []
+                    # for pile in solution['used_piles']:
+                    #     used_piles_data.append({
+                    #         "Штабель": pile['index'],
+                    #         "Ковшей": pile['scoops'],
+                    #         "Масса (т)": f"{pile['amount']:.2f}"
+                    #     })
+
                     for pile in solution['used_piles']:
                         used_piles_data.append({
                             "Штабель": pile['index'],
-                            "Ковшей": pile['scoops'],
+                            "Ковшей за цикл": pile['bucket_proportion'],
+                            "Ковшей за все циклы": pile['buckets_total'],
                             "Масса (т)": f"{pile['amount']:.2f}"
                         })
                     
@@ -79,10 +107,10 @@ if input_method == "Вручную":
                     st.subheader("Визуализация")
                     
                     # График концентрации
-                    st.write("Концентрация золота в смеси")
+                    st.write("Содержание золота в шихте")
                     concentration_data = pd.DataFrame({
                         "Параметр": ["Целевая", "Полученная"],
-                        "Концентрация (г/т)": [target_concentration, solution['concentration']]
+                        "Содержание (г/т)": [target_concentration, solution['concentration']]
                     })
                     st.bar_chart(concentration_data.set_index("Параметр"))
                     
@@ -98,7 +126,7 @@ if input_method == "Вручную":
                     st.write("Распределение ковшей по штабелям")
                     scoops_data = pd.DataFrame({
                         "Штабель": [pile['index'] for pile in solution['used_piles']],
-                        "Ковшей": [pile['scoops'] for pile in solution['used_piles']]
+                        "Ковшей": [pile['buckets_total'] for pile in solution['used_piles']]
                     })
                     st.bar_chart(scoops_data.set_index("Штабель"))
 
@@ -111,7 +139,7 @@ else:  # Ввод из CSV файла
         try:
             df = pd.read_csv(uploaded_file)
             st.write("Предварительный просмотр данных:")
-            st.dataframe(df.head())
+            st.dataframe(df)
             
             # Проверка наличия необходимых столбцов
             required_columns = ['ore_mass_t', 'gold_concentration_gt', 'index']
@@ -131,26 +159,41 @@ else:  # Ввод из CSV файла
                 
                 # Кнопка для запуска алгоритма
                 if st.button("Найти оптимальные комбинации"):
-                    solutions = find_optimal_combinations(piles, target_mass, target_concentration, scoop_size_t, allowed_deviation)
-                    
-                    if not solutions:
+                    print('h1')
+                    solutions = find_optimal_combinations(piles, target_mass, target_concentration, scoop_size_t, 
+                                                        allowed_concentration_deviation, allowed_mass_deviation, max_solutions)
+                    print('h2')
+                    solutions.append(optimize_stockpiles(piles, target_mass, target_concentration, 
+                        tolerance=allowed_concentration_deviation, bucket_capacity=scoop_size_t))
+                    print('h3')
+
+                    if not solutions or solutions == [None]:
                         st.error("Не удалось найти подходящие комбинации штабелей.")
                     else:
-                        st.success(f"Найдено {len(solutions)} вариантов комбинаций штабелей.")
+                        st.success(f"Найдено {len(solutions)} комбинаций штабелей.")
                         
                         for i, solution in enumerate(solutions):
                             with st.expander(f"Вариант {i+1}"):
                                 st.write(f"Итоговая масса руды: {solution['total_mass']:.2f} т")
-                                st.write(f"Итоговая концентрация золота: {solution['concentration']:.2f} г/т")
-                                st.write(f"Отклонение от целевой концентрации: {abs(solution['concentration'] - target_concentration):.2f} г/т")
+                                st.write(f"Отклонение от целевой массы: {abs(solution['total_mass'] - target_mass):.2f} т ({abs(solution['total_mass'] - target_mass) / target_mass * 100:.1f}%)")
+                                st.write(f"Итоговое содержание золота: {solution['concentration']:.2f} г/т")
+                                st.write(f"Отклонение от целевого содержания: {abs(solution['concentration'] - target_concentration):.2f} г/т")
                                 st.write(f"Использовано штабелей: {solution['used_piles_count']}")
-                                
+                                st.write(f"Количество циклов: {solution['cycles_count']}")
+
                                 # Создаем DataFrame для отображения используемых штабелей
                                 used_piles_data = []
+                                # for pile in solution['used_piles']:
+                                #     used_piles_data.append({
+                                #         "Штабель": pile['index'],
+                                #         "Ковшей": pile['buckets_total'],
+                                #         "Масса (т)": f"{pile['amount']:.2f}"
+                                #     })
                                 for pile in solution['used_piles']:
                                     used_piles_data.append({
                                         "Штабель": pile['index'],
-                                        "Ковшей": pile['scoops'],
+                                        "Ковшей за цикл": pile['bucket_proportion'],
+                                        "Ковшей за все циклы": pile['buckets_total'],
                                         "Масса (т)": f"{pile['amount']:.2f}"
                                     })
                                 
@@ -160,10 +203,10 @@ else:  # Ввод из CSV файла
                                 st.subheader("Визуализация")
                                 
                                 # График концентрации
-                                st.write("Концентрация золота в смеси")
+                                st.write("Содержание золота в смеси")
                                 concentration_data = pd.DataFrame({
                                     "Параметр": ["Целевая", "Полученная"],
-                                    "Концентрация (г/т)": [target_concentration, solution['concentration']]
+                                    "Содержание (г/т)": [target_concentration, solution['concentration']]
                                 })
                                 st.bar_chart(concentration_data.set_index("Параметр"))
                                 
@@ -179,7 +222,7 @@ else:  # Ввод из CSV файла
                                 st.write("Распределение ковшей по штабелям")
                                 scoops_data = pd.DataFrame({
                                     "Штабель": [pile['index'] for pile in solution['used_piles']],
-                                    "Ковшей": [pile['scoops'] for pile in solution['used_piles']]
+                                    "Ковшей": [pile['buckets_total'] for pile in solution['used_piles']]
                                 })
                                 st.bar_chart(scoops_data.set_index("Штабель"))
         except Exception as e:
@@ -190,7 +233,7 @@ else:  # Ввод из CSV файла
         st.markdown("""
         CSV файл должен содержать следующие столбцы:
         - `ore_mass_t` - масса руды в тоннах
-        - `gold_concentration_gt` - концентрация золота в г/т
+        - `gold_concentration_gt` - Содержание золота в г/т
         - `index` - индекс штабеля
         - `preference` (опционально) - предпочтительность штабеля от 0 до 1
         """)
@@ -200,7 +243,7 @@ with st.expander("Информация о формате CSV файла"):
     st.markdown("""
     CSV файл должен содержать следующие столбцы:
     - `ore_mass_t` - масса руды в тоннах
-    - `gold_concentration_gt` - концентрация золота в г/т
+    - `gold_concentration_gt` - Содержание золота в г/т
     - `index` - индекс штабеля
     - `preference` (опционально) - предпочтительность штабеля от 0 до 1
     
